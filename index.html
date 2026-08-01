@@ -242,6 +242,39 @@ button:hover {
             font-size: 12px;
             margin-top: 15px;
         }
+
+        .rate-controls {
+            width: 325px;
+            margin: 0 auto 12px;
+            color: #00ff9d;
+            text-align: left;
+            font-size: 14px;
+        }
+
+        .rate-controls label {
+            display: block;
+            margin-bottom: 8px;
+            cursor: pointer;
+        }
+
+        .rate-controls input[type="radio"] {
+            margin-right: 6px;
+        }
+
+        .rate-controls input[type="number"] {
+            width: 90px;
+            padding: 6px;
+            font-size: 14px;
+            margin-left: 6px;
+            margin-bottom: 0;
+        }
+
+        .rate-note {
+            color: #ffa502;
+            font-size: 12px;
+            line-height: 1.4;
+            margin-top: 4px;
+        }
     </style>
 </head>
 
@@ -256,6 +289,19 @@ button:hover {
     <form id="postForm">
         <label for="phoneNumber"></label>
         <input type="text" id="phoneNumber" name="phoneNumber" placeholder="请输入手机号" required><br><br>
+
+        <div class="rate-controls">
+            <label>
+                <input type="radio" name="sendMode" value="rate" checked>
+                限速模式：
+                <input type="number" id="requestsPerSecond" min="1" max="30" step="1" value="30"> 请求/秒
+            </label>
+            <label>
+                <input type="radio" name="sendMode" value="concurrent">
+                默认并发模式
+            </label>
+            <div class="rate-note">限速模式最高 5 请求/秒。</div>
+        </div>
 
         <button type="button" id="sendBtn" class="btn-start" onclick="sendRequests()">📣 开始发送</button>
         <button type="button" id="stopBtn" class="btn-stop" onclick="stopRequests()">⏹️ 停止发送</button>
@@ -3475,6 +3521,7 @@ button:hover {
         // 并发控制配置（防止请求堵塞）
         const MAX_CONCURRENT = 30; // 最大并发数（已优化：10→30）⚡
         const REQUEST_DELAY = 10; // 每批请求间隔(ms)（已优化：100ms→10ms）⚡
+        const MAX_REQUESTS_PER_SECOND = 5;
         
         // ⭐ 请求去重缓存（避免短时间内重复请求相同URL）
         const requestCache = new Map();
@@ -3495,6 +3542,10 @@ button:hover {
             const executing = [];
             
             for (const task of tasks) {
+                if (!isRunning) {
+                    break;
+                }
+
                 const promise = task().then(result => {
                     executing.splice(executing.indexOf(promise), 1);
                     return result;
@@ -3509,6 +3560,43 @@ button:hover {
             }
             
             return Promise.all(results);
+        }
+
+        async function runWithRateLimit(tasks, requestsPerSecond) {
+            const intervalMs = Math.ceil(1000 / requestsPerSecond);
+            const executing = [];
+
+            for (const task of tasks) {
+                if (!isRunning) {
+                    break;
+                }
+
+                const promise = task().finally(() => {
+                    executing.splice(executing.indexOf(promise), 1);
+                });
+                executing.push(promise);
+
+                await sleep(intervalMs);
+            }
+
+            await Promise.allSettled(executing);
+        }
+
+        function getSendModeConfig() {
+            const selectedMode = document.querySelector('input[name="sendMode"]:checked');
+            const mode = selectedMode ? selectedMode.value : 'rate';
+            const rawRequestsPerSecond = Number(document.getElementById('requestsPerSecond').value);
+            const requestsPerSecond = Math.min(
+                MAX_REQUESTS_PER_SECOND,
+                Math.max(1, Number.isFinite(rawRequestsPerSecond) ? Math.floor(rawRequestsPerSecond) : 1)
+            );
+
+            document.getElementById('requestsPerSecond').value = requestsPerSecond;
+
+            return {
+                mode,
+                requestsPerSecond
+            };
         }
 
         function addLog(message, type = 'info') {
@@ -3571,6 +3659,7 @@ button:hover {
     
     const phoneNumber = document.getElementById('phoneNumber').value.trim();
     const times = 1;
+    const sendConfig = getSendModeConfig();
 
     if (!phoneNumber || !/^[1][3-9][0-9]{9}$/.test(phoneNumber)) {
     addLog('错误：请输入正确的11位中国手机号！', 'error');
@@ -3599,7 +3688,11 @@ button:hover {
     console.log('🚀 开始发送请求...');
     console.log(`📱 手机号: ${phoneNumber}`);
     console.log(`🔢 攻击次数: ${times}`);
-    console.log(`⚙️  并发控制: 最大${MAX_CONCURRENT}个并发`);
+    if (sendConfig.mode === 'rate') {
+        console.log(`⚙️  限速控制: ${sendConfig.requestsPerSecond} 请求/秒`);
+    } else {
+        console.log(`⚙️  并发控制: 最大${MAX_CONCURRENT}个并发`);
+    }
     console.log('─'.repeat(60));
     
     // 按钮状态切换（绿色开始 → 红色停止）
@@ -3607,6 +3700,11 @@ button:hover {
     document.getElementById('stopBtn').style.display = 'inline-block';
     
     addLog(`开始向 ${phoneNumber} 发送短信...`, 'system');
+    if (sendConfig.mode === 'rate') {
+        addLog(`限速模式：${sendConfig.requestsPerSecond} 请求/秒`, 'info');
+    } else {
+        addLog(`默认并发模式：最大 ${MAX_CONCURRENT} 并发`, 'info');
+    }
 
     const requestTasks = [];
     
@@ -3767,13 +3865,21 @@ button:hover {
         }
     }
 
-    // 使用并发控制执行所有请求
+    // 按用户选择执行请求
     console.log(`\n📦 总共创建 ${totalRequests} 个请求任务`);
-    console.log(`⚙️  使用 ${MAX_CONCURRENT} 个并发执行\n`);
+    if (sendConfig.mode === 'rate') {
+        console.log(`⚙️  使用 ${sendConfig.requestsPerSecond} 请求/秒执行\n`);
+    } else {
+        console.log(`⚙️  使用 ${MAX_CONCURRENT} 个并发执行\n`);
+    }
     
     const startTime = Date.now();
     
-    await runWithConcurrency(requestTasks, MAX_CONCURRENT);
+    if (sendConfig.mode === 'rate') {
+        await runWithRateLimit(requestTasks, sendConfig.requestsPerSecond);
+    } else {
+        await runWithConcurrency(requestTasks, MAX_CONCURRENT);
+    }
     
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
     
